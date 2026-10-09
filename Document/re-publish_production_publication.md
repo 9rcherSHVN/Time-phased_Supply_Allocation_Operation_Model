@@ -65,3 +65,55 @@ Re-publication immediately changes **projected availability**, not realized prod
 The live deficit view exposes shortfalls immediately; durable alerts and Shop-screen refresh still require the documented notification implementation.
 
 In short: **prepare separately → validate → switch the active version → query revised supply against unchanged, live Shop records**. No reservation migration is needed, and advance production adjustments do not wait until their target week to affect reservability.
+
+---
+
+The current design uses **10 core tables, 8 views, 1 query function, and 13 stored procedures**. Not all procedures are implemented yet; seven are fail-fast workflow templates.
+
+**Table Entities**
+| Table | Role |
+|---|---|
+| `Mill` | Owns the active forecast-version pointer and accounting dates. |
+| `Shop` | Identifies the demand owner. |
+| `Product` | Defines product identity and canonical unit. |
+| `ForecastPublication` | Stores V1, V2, their coverage, status, and publication metadata. |
+| `ForecastLine` | Stores each version’s product/week production quantities. |
+| `DemandRequest` | Stores continuing Shop demand against one selected Mill. |
+| `Reservation` | Stores week-specific commitments and their lifecycle quantities. |
+| `ActualProduction` | Stores final weekly Mill production. |
+| `ActualUsage` | Stores reported Shop usage. |
+| `BusinessAuditEvent` | Preserves publication and operational history. |
+
+**Publication and Availability Objects**
+For the V1-to-V2 use case, these are the principal objects:
+
+| Object | Type | Responsibility |
+|---|---|---|
+| `LoadForecastSnapshot` | Procedure template | Creates and loads inactive V2 without changing V1. |
+| `ValidateForecastPublication` | Reference procedure | Checks completeness and coverage; makes V2 validated. |
+| `PublishForecast` | Reference procedure | Atomically switches the active pointer from V1 to V2. |
+| `AcquireTransactionLock` | Helper procedure | Coordinates publication with Shop writes. |
+| `ReserveSupply` | Reference procedure | Checks current time-phased availability and records a reservation atomically. |
+| `GetShopAvailability` | Read procedure | Returns the selected Mill/product timeline. |
+| `fnTimePhasedAvailability` | Query function | Calculates projected balances, realized carryover, and downstream-protected reservable quantities. |
+
+The eight supporting views are `vWeekOffsets`, `vActiveForecast`, `vOpenReservations`, `vWeeklyUsage`, `vDemandPosition`, `vShopAvailability`, and `vDeficitExceptions`—**that is seven views, correcting the opening count**.
+
+**Why V2 Balances Are Accurate**
+`fnTimePhasedAvailability` reads:
+
+```text
+Active publication pointer → V2 forecast quantities
+                          + existing actual production/usage
+                          + current remaining reservations
+                          → weekly projected ending balances
+                          → protected reservable quantities
+```
+
+There is **no stored balance table to rebuild or synchronize**. After V2 commits, the next query calculates from V2 and the live operational records. Existing reservations remain unchanged.
+
+The remaining five workflow procedures are `CreateDemandRequest`, `EditFutureDemand`, `CancelReservation`, `RecordActualUsage`, and `CloseMillWeek`; `RecommendDeficitPriority` supplies the advisory fallback. Two table-valued input types support forecast and production uploads.
+
+**Correct total: 10 tables, 7 views, 1 function, 13 procedures, and 2 input types.** See the inventory in `README.md`.
+
+One qualification: Shops have no bulk-loading outage, and reads continue through activation. Conflicting writes may briefly serialize at the atomic switch. Independent cutoff expiry and production-grade authorization/notification handling still need implementation.
